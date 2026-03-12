@@ -1,10 +1,21 @@
-from flask import Flask, jsonify
+import json
+from cleaning import load_and_clean_data
+from utils import generate_transactions
+from optimizer import optimize_settlements
 
-app = Flask(__name__)
+def main():
 
-@app.route('/')
-def home():
-    return jsonify({"message": "Hellfire AIML Model API is running"})
+    df = load_and_clean_data("debts.csv")
 
-if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    transactions = generate_transactions(df)
+
+    settlements = optimize_settlements(transactions)
+
+    result = [s.to_dict() for s in settlements]
+
+    output = {"settlements": result}
+
+    print(json.dumps(output, indent=2))
+
+if __name__ == "__main__":
+    main()
