@@ -2,11 +2,13 @@ import random
 
 users = ["Utkarsh", "Ayush", "Muskan", "Sujay"]
 
-def generate_transactions(df, limit=10):
+random.seed(42)
+
+def generate_transactions(df, amount_column, limit=10):
 
     transactions = []
 
-    for amount in df["Amount"].head(limit):
+    for amount in df[amount_column].head(limit):
 
         payer = random.choice(users)
         receiver = random.choice(users)

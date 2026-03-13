@@ -4,13 +4,19 @@ def load_and_clean_data(file_path):
 
     df = pd.read_csv(file_path)
 
-    # Remove rows with missing amount
-    df = df.dropna(subset=["Amount"])
+    # find numeric columns
+    numeric_cols = df.select_dtypes(include=["number"]).columns
 
-    # Convert amount to numeric
-    df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce")
+    if len(numeric_cols) == 0:
+        raise ValueError("No numeric column found in CSV")
 
-    # Drop invalid rows
+    # use the first numeric column as amount
+    amount_column = numeric_cols[0]
+
+    df = df.dropna(subset=[amount_column])
+
+    df[amount_column] = pd.to_numeric(df[amount_column], errors="coerce")
+
     df = df.dropna()
 
-    return df
+    return df, amount_column

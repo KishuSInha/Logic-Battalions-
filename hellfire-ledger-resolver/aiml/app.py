@@ -5,9 +5,9 @@ from optimizer import optimize_settlements
 
 def main():
 
-    df = load_and_clean_data("debts.csv")
+    df, amount_column = load_and_clean_data("debts.csv")
 
-    transactions = generate_transactions(df)
+    transactions = generate_transactions(df, amount_column)
 
     settlements = optimize_settlements(transactions)
 
@@ -16,6 +16,7 @@ def main():
     output = {"settlements": result}
 
     print(json.dumps(output, indent=2))
+
 
 if __name__ == "__main__":
     main()
