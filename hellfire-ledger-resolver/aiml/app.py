@@ -88,8 +88,11 @@ def _generate_visuals_data(transactions, settlements):
         balances[r] = balances.get(r, 0.0) + float(amt)
         
     # Extract top 5 debtors and creditors
-    debtors = sorted([(n, -b) for n, b in balances.items() if b < 0], key=lambda x: x[1], reverse=True)[:5]
-    creditors = sorted([(n, b) for n, b in balances.items() if b > 0], key=lambda x: x[1], reverse=True)[:5]
+    debtor_list = sorted([(n, -b) for n, b in balances.items() if b < 0], key=lambda x: x[1], reverse=True)
+    creditor_list = sorted([(n, b) for n, b in balances.items() if b > 0], key=lambda x: x[1], reverse=True)
+    
+    debtors = debtor_list[:5]
+    creditors = creditor_list[:5]
     
     settled_volume = sum(s.amount for s in settlements)
 

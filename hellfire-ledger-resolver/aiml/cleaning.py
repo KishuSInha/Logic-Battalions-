@@ -124,17 +124,24 @@ def clean_data_from_df(df):
 
     # --- 3. Data Cleansing ---
     # Drop rows with missing names
-    before = len(df)
     df["payer"]    = df["payer"].apply(_safe_str)
     df["receiver"] = df["receiver"].apply(_safe_str)
     df = df.dropna(subset=["payer", "receiver"])
     
-    # Amount cleaning (strip $, commas, etc)
-    df["amount"] = (
-        df["amount"].astype(str)
-        .str.replace(r"[\$,\s]", "", regex=True)
-        .pipe(pd.to_numeric, errors="coerce")
-    )
+    # Amount cleaning (strip $, commas, €, £, ¥ and handle scientific notation)
+    def _parse_amount(val):
+        if pd.isna(val): return None
+        s = str(val).strip().lower()
+        # Remove currency symbols and common non-numeric chars
+        clean_s = re.sub(r'[^\d\.\-\+eE]', '', s)
+        try:
+            return float(clean_s)
+        except (ValueError, TypeError):
+            return None
+
+    import re
+    df["amount"] = df["amount"].apply(_parse_amount)
+    
     df = df.dropna(subset=["amount"])
     df = df[df["amount"] > 0]
 

@@ -3,15 +3,21 @@ import re
 
 class SchemaDetector:
     """
-    Intelligent Schema Detection Engine.
-    Uses a hybrid approach of keyword weights and data pattern analysis 
-    to identify (Payer, Receiver, Amount) columns in arbitrary CSVs.
+    Intelligent Schema Detection Engine v2.0.
+    Uses confidence-weighted keyword analysis and data pattern recognition
+    to identify (Payer, Receiver, Amount) columns in diverse datasets.
     """
 
     def __init__(self):
-        self.PAYER_KEYWORDS = ["payer", "from", "debtor", "who_paid", "paid_by", "nameorig", "user_id", "sender", "origin", "customer"]
-        self.RECEIVER_KEYWORDS = ["receiver", "to", "creditor", "owed_to", "payee", "namedest", "merchant", "destination", "category", "description", "item", "product"]
-        self.AMOUNT_KEYWORDS = ["amount", "amt", "sum", "total", "value", "cost", "spent", "price"]
+        # HIGH CONFIDENCE KEYWORDS
+        self.PAYER_PRIMARY = ["payer", "from", "debtor", "who_paid", "paid_by", "sender", "origin", "source"]
+        self.PAYER_SECONDARY = ["nameorig", "user_id", "customer", "acc_from", "client"]
+        
+        self.RECEIVER_PRIMARY = ["receiver", "to", "creditor", "owed_to", "payee", "destination", "target", "beneficiary"]
+        self.RECEIVER_SECONDARY = ["namedest", "merchant", "category", "description", "item", "product", "purpose", "vendor"]
+        
+        self.AMOUNT_PRIMARY = ["amount", "amt", "sum", "total", "value", "cost", "price", "net"]
+        self.AMOUNT_SECONDARY = ["spent", "payment", "balance", "transaction_amount", "volume", "val"]
 
     def infer_schema(self, df: pd.DataFrame):
         column_scores = {col: {"payer": 0, "receiver": 0, "amount": 0} for col in df.columns}
@@ -21,25 +27,47 @@ class SchemaDetector:
             series = df[col]
             scores = column_scores[col]
             
-            # --- 1. Keyword Scoring ---
-            for k in self.PAYER_KEYWORDS:
-                if k in col_lower: scores["payer"] += 45
-            for k in self.RECEIVER_KEYWORDS:
-                if k in col_lower: scores["receiver"] += 45
-            for k in self.AMOUNT_KEYWORDS:
-                if k in col_lower: scores["amount"] += 45
+            # --- 1. Keyword Scoring with Weights ---
+            # Payer
+            for k in self.PAYER_PRIMARY:
+                if k == col_lower: scores["payer"] += 60
+                elif k in col_lower: scores["payer"] += 40
+            for k in self.PAYER_SECONDARY:
+                if k in col_lower: scores["payer"] += 25
+
+            # Receiver
+            for k in self.RECEIVER_PRIMARY:
+                if k == col_lower: scores["receiver"] += 60
+                elif k in col_lower: scores["receiver"] += 40
+            for k in self.RECEIVER_SECONDARY:
+                if k in col_lower: scores["receiver"] += 25
+
+            # Amount
+            for k in self.AMOUNT_PRIMARY:
+                if k == col_lower: scores["amount"] += 70
+                elif k in col_lower: scores["amount"] += 50
+            for k in self.AMOUNT_SECONDARY:
+                if k in col_lower: scores["amount"] += 30
 
             # --- 2. Data Pattern Scoring ---
+            # Amount detection (Numeric priority)
             if pd.api.types.is_numeric_dtype(series):
                 scores["amount"] += 35
-                if not series.empty and series.min() >= 0:
-                    scores["amount"] += 15
+                # Numeric columns could also be IDs
+                scores["payer"] += 5
+                scores["receiver"] += 5
+                # Likely amount if values vary and include decimals
+                if not series.empty:
+                    if (series % 1 > 0).any(): scores["amount"] += 20
+                    if series.min() >= 0: scores["amount"] += 10
             
+            # String identification (Payer/Receiver priority)
             elif pd.api.types.is_object_dtype(series):
                 sample = series.dropna().astype(str)
                 if not sample.empty:
                     val_len = sample.str.len().mean()
-                    if val_len < 35: 
+                    # Short strings are more likely to be names or categories
+                    if val_len < 40: 
                         scores["payer"] += 20
                         scores["receiver"] += 20
                     
@@ -47,23 +75,30 @@ class SchemaDetector:
                     if uniques > 1:
                         scores["payer"] += 10
                         scores["receiver"] += 10
+                        
+                    # Check for currency symbols in string columns (often amounts stored as text)
+                    if sample.str.contains(r'[\$\€\£\¥]', regex=True).any():
+                        scores["amount"] += 40
 
         # --- 3. Best Column Selection (with collision avoidance) ---
-        amount_col = self._pick_best(column_scores, "amount")
+        # 1st Priority: Amount (highest confidence usually)
+        amount_col = self._pick_best(column_scores, "amount", threshold=40)
         
-        # Don't let payer/receiver take the amount column
+        # Prevent collisions
         for col in column_scores:
             if col == amount_col:
-                column_scores[col]["payer"] = -100
-                column_scores[col]["receiver"] = -100
+                column_scores[col]["payer"] = -500
+                column_scores[col]["receiver"] = -500
 
-        payer_col = self._pick_best(column_scores, "payer")
+        # 2nd Priority: Payer
+        payer_col = self._pick_best(column_scores, "payer", threshold=30)
         if payer_col:
              for col in column_scores:
                  if col == payer_col:
-                     column_scores[col]["receiver"] = -100
+                     column_scores[col]["receiver"] = -500
 
-        receiver_col = self._pick_best(column_scores, "receiver")
+        # 3rd Priority: Receiver
+        receiver_col = self._pick_best(column_scores, "receiver", threshold=30)
 
         detected = {
             "payer": payer_col,
@@ -71,23 +106,36 @@ class SchemaDetector:
             "amount": amount_col
         }
 
-        # --- 4. Special Case: Single User Expenses ---
-        if not detected["payer"] and detected["receiver"] and detected["amount"]:
-            detected["payer"] = "__SYNTHETIC_USER__"
-        
-        # --- 5. Fallback for mixed retail datasets ---
-        if not detected["receiver"] and detected["amount"]:
-             # Drop threshold to find any description/category column
-             fallback = self._pick_best(column_scores, "receiver", threshold=0)
-             if fallback:
-                 detected["receiver"] = fallback
+        # --- 4. Structural Logic (The "Blind Guess" Fallback) ---
+        # If we found an amount but missing either payer or receiver, 
+        # and it's a small dataset, we "blindly" guess based on available columns.
+        if detected["amount"] and (not detected["payer"] or not detected["receiver"]):
+            remaining_cols = [c for c in df.columns if c != detected["amount"] and c != detected["payer"] and c != detected["receiver"]]
+            
+            # Fill Payer first if missing
+            if not detected["payer"] and remaining_cols:
+                # Pick the one with highest potential "payer" score even if below threshold
+                fallback_payer = self._pick_best(column_scores, "payer", threshold=0, exclude=[detected["amount"], detected["receiver"]])
+                if fallback_payer:
+                    detected["payer"] = fallback_payer
+                    remaining_cols.remove(fallback_payer)
+            
+            # Fill Receiver if missing
+            if not detected["receiver"] and remaining_cols:
+                fallback_receiver = self._pick_best(column_scores, "receiver", threshold=0, exclude=[detected["amount"], detected["payer"]])
+                if fallback_receiver:
+                    detected["receiver"] = fallback_receiver
+
+        # --- 5. Special Case: Single User Expenses ---
 
         return detected
 
-    def _pick_best(self, scores_map, key, threshold=25):
+    def _pick_best(self, scores_map, key, threshold=25, exclude=None):
+        if exclude is None: exclude = []
         best_col = None
         max_score = threshold
         for col, scores in scores_map.items():
+            if col in exclude: continue
             if scores[key] > max_score:
                 max_score = scores[key]
                 best_col = col
